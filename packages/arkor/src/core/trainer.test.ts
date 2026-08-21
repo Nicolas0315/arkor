@@ -715,6 +715,7 @@ describe("createTrainer (reconnect backoff + max attempts)", () => {
     handlers: (
       | { kind: "throw"; error: Error }
       | { kind: "stream"; chunks: string[] }
+      | { kind: "stalled"; chunks: string[]; intervalMs?: number }
     )[],
   ): { fetch: typeof fetch; streamCalls: () => number } {
     let streamCalls = 0;
@@ -742,14 +743,43 @@ describe("createTrainer (reconnect backoff + max attempts)", () => {
           throw new Error(`unexpected stream open #${streamCalls}`);
         }
         if (handler.kind === "throw") throw handler.error;
-        return new Response(sseStream(handler.chunks), {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        });
+        return new Response(
+          handler.kind === "stalled"
+            ? stalledSseStream(handler.chunks, init?.signal, handler.intervalMs)
+            : sseStream(handler.chunks),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        );
       }
       throw new Error(`unexpected fetch: ${method} ${url}`);
     }) as typeof fetch;
     return { fetch: impl, streamCalls: () => streamCalls };
+  }
+
+  function stalledSseStream(
+    chunks: string[],
+    signal: AbortSignal | null | undefined,
+    intervalMs = 0,
+  ): ReadableStream<Uint8Array> {
+    const enc = new TextEncoder();
+    return new ReadableStream({
+      start(controller) {
+        const timers = chunks.map((chunk, index) =>
+          setTimeout(
+            () => controller.enqueue(enc.encode(chunk)),
+            intervalMs * index,
+          ),
+        );
+        const abort = () => {
+          for (const timer of timers) clearTimeout(timer);
+          controller.error(signal?.reason ?? new Error("stream aborted"));
+        };
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      },
+    });
   }
 
   async function withMockedFetch<T>(
@@ -903,6 +933,173 @@ describe("createTrainer (reconnect backoff + max attempts)", () => {
     expect(((error as Error).cause as Error).message).toMatch(
       /closed without emitting any frame/,
     );
+    expect(streamCalls()).toBe(3);
+  });
+
+  it("reconnects when a ping is followed by an idle stream", async () => {
+    await writeState(
+      { orgSlug: "anon-org", projectSlug: "proj", projectId: "p1" },
+      cwd,
+    );
+    const { fetch: fetcher, streamCalls } = streamFetcher([
+      { kind: "stalled", chunks: ["event: ping\ndata: \n\n"] },
+      {
+        kind: "stream",
+        chunks: [
+          `id: 2\nevent: training.completed\ndata: ${JSON.stringify({
+            type: "training.completed",
+            jobId: "j1",
+            timestamp: "2026-01-01T00:00:02Z",
+          })}\n\n`,
+        ],
+      },
+    ]);
+    const trainer = createTrainer(
+      {
+        name: "run",
+        model: "m",
+        dataset: { type: "huggingface", name: "x" },
+      },
+      {
+        baseUrl: "http://mock",
+        credentials: creds,
+        cwd,
+        reconnectDelayMs: 1,
+        idleTimeoutMs: 25,
+      },
+    );
+
+    await withMockedFetch(fetcher, async () => {
+      await expect(trainer.wait()).resolves.toMatchObject({
+        job: { status: "completed" },
+      });
+    });
+    expect(streamCalls()).toBe(2);
+  });
+
+  it("stops on a user abort without reconnecting an idle stream", async () => {
+    await writeState(
+      { orgSlug: "anon-org", projectSlug: "proj", projectId: "p1" },
+      cwd,
+    );
+    const abortController = new AbortController();
+    const { fetch: fetcher, streamCalls } = streamFetcher([
+      { kind: "stalled", chunks: [] },
+    ]);
+    const trainer = createTrainer(
+      {
+        name: "run",
+        model: "m",
+        dataset: { type: "huggingface", name: "x" },
+        abortSignal: abortController.signal,
+      },
+      {
+        baseUrl: "http://mock",
+        credentials: creds,
+        cwd,
+        reconnectDelayMs: 1,
+        idleTimeoutMs: 60_000,
+      },
+    );
+
+    await withMockedFetch(fetcher, async () => {
+      const waiting = trainer.wait();
+      setTimeout(() => abortController.abort(), 5);
+      await expect(waiting).rejects.toThrow();
+    });
+    expect(streamCalls()).toBe(1);
+  });
+
+  it("does not interrupt a stream that continues to send frames", async () => {
+    await writeState(
+      { orgSlug: "anon-org", projectSlug: "proj", projectId: "p1" },
+      cwd,
+    );
+    const { fetch: fetcher, streamCalls } = streamFetcher([
+      {
+        kind: "stalled",
+        // Real timers: keep a 4x margin between the frame gap (25 ms) and
+        // the watchdog (100 ms) so a slow CI shard cannot turn a healthy
+        // stream into a spurious timeout, while the total stream duration
+        // (7 gaps = 175 ms) still exceeds a single watchdog window - the
+        // completed frame is only reachable if every frame reset the timer.
+        intervalMs: 25,
+        chunks: [
+          "event: ping\ndata: \n\n",
+          "event: ping\ndata: \n\n",
+          "event: ping\ndata: \n\n",
+          "event: ping\ndata: \n\n",
+          "event: ping\ndata: \n\n",
+          `id: 1\nevent: training.log\ndata: ${JSON.stringify({
+            type: "training.log",
+            jobId: "j1",
+            timestamp: "2026-01-01T00:00:01Z",
+            step: 1,
+            loss: 1,
+          })}\n\n`,
+          `id: 2\nevent: training.completed\ndata: ${JSON.stringify({
+            type: "training.completed",
+            jobId: "j1",
+            timestamp: "2026-01-01T00:00:02Z",
+          })}\n\n`,
+        ],
+      },
+    ]);
+    const trainer = createTrainer(
+      {
+        name: "run",
+        model: "m",
+        dataset: { type: "huggingface", name: "x" },
+      },
+      {
+        baseUrl: "http://mock",
+        credentials: creds,
+        cwd,
+        reconnectDelayMs: 1,
+        idleTimeoutMs: 100,
+      },
+    );
+
+    await withMockedFetch(fetcher, async () => {
+      await expect(trainer.wait()).resolves.toMatchObject({
+        job: { status: "completed" },
+      });
+    });
+    expect(streamCalls()).toBe(1);
+  });
+
+  it("counts watchdog failures toward maxReconnectAttempts", async () => {
+    await writeState(
+      { orgSlug: "anon-org", projectSlug: "proj", projectId: "p1" },
+      cwd,
+    );
+    const { fetch: fetcher, streamCalls } = streamFetcher([
+      { kind: "stalled", chunks: ["event: ping\ndata: \n\n"] },
+      { kind: "stalled", chunks: ["event: ping\ndata: \n\n"] },
+      { kind: "stalled", chunks: ["event: ping\ndata: \n\n"] },
+    ]);
+    const trainer = createTrainer(
+      {
+        name: "run",
+        model: "m",
+        dataset: { type: "huggingface", name: "x" },
+      },
+      {
+        baseUrl: "http://mock",
+        credentials: creds,
+        cwd,
+        reconnectDelayMs: 1,
+        maxReconnectDelayMs: 1,
+        maxReconnectAttempts: 2,
+        idleTimeoutMs: 25,
+      },
+    );
+
+    await withMockedFetch(fetcher, async () => {
+      await expect(trainer.wait()).rejects.toThrow(
+        /failed 3 consecutive times/,
+      );
+    });
     expect(streamCalls()).toBe(3);
   });
 

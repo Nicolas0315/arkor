@@ -50,6 +50,11 @@ export interface TrainerInternalContext {
    * Undefined means unlimited.
    */
   maxReconnectAttempts?: number;
+  /**
+   * Maximum time to wait for the next SSE frame before treating the stream
+   * as a transient transport failure. Defaults to 60_000 (60 s).
+   */
+  idleTimeoutMs?: number;
 }
 
 interface StreamEventBase {
@@ -171,6 +176,7 @@ export function createTrainer(
   const initialReconnectDelayMs = context.reconnectDelayMs ?? 1000;
   const maxReconnectDelayMs = context.maxReconnectDelayMs ?? 60_000;
   const maxReconnectAttempts = context.maxReconnectAttempts;
+  const idleTimeoutMs = context.idleTimeoutMs ?? 60_000;
   const cwd = context.cwd ?? process.cwd();
   const config = buildJobConfig(input);
 
@@ -411,11 +417,21 @@ export function createTrainer(
       };
 
       while (!terminal) {
+        const watchdog = new AbortController();
+        // A fresh composite per attempt is safe on a long-lived user signal:
+        // the engine floor (>=22.22) ships the WeakRef-backed
+        // AbortSignal.any, so each attempt's composite and its source
+        // registrations become collectable as soon as the attempt's fetch
+        // settles - reconnect loops do not accumulate live listeners.
+        const streamSignal = AbortSignal.any([
+          ...(abortSignal ? [abortSignal] : []),
+          watchdog.signal,
+        ]);
         let response: Response;
         try {
           response = await client.openEventStream(startedJob.id, scope, {
             lastEventId,
-            signal: abortSignal,
+            signal: streamSignal,
           });
         } catch (err) {
           // Permanent client errors fail identically on every reconnect.
@@ -446,8 +462,31 @@ export function createTrainer(
         }
 
         let receivedAny = false;
+        // The watchdog guards only the frame loop, deliberately not the
+        // connection phase: a connect that never returns headers surfaces
+        // through undici's own headersTimeout as a fetch rejection and lands
+        // in the same handleFailure path above. Arming a timer before the
+        // fetch would buy little and would leak a pending 60 s timeout into
+        // every fast-failing reconnect attempt.
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const resetIdleTimer = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            // A fetch signal abort tears down a stalled response body in the
+            // same way as a transport failure, so it can reuse the existing
+            // reconnect path rather than creating a parallel timeout path.
+            watchdog.abort(
+              new Error("Trainer SSE stream timed out waiting for a frame"),
+            );
+          }, idleTimeoutMs);
+        };
+
+        resetIdleTimer();
         try {
           for await (const sse of iterateEvents(response)) {
+            // Every frame, including ping, proves the transport is still
+            // alive. Pings remain excluded from progress accounting below.
+            resetIdleTimer();
             if (sse.id) lastEventId = sse.id;
             if (sse.event === "ping") {
               // Keepalive only. Deliberately NOT counted as progress: a
@@ -494,8 +533,17 @@ export function createTrainer(
           }
         } catch (err) {
           if (err instanceof FatalStreamError) throw err.cause;
+          // Cleared here, not just in `finally`: `finally` only runs after
+          // this catch completes, so without this the watchdog could fire
+          // mid-backoff (inside handleFailure's sleep) and abort a
+          // controller whose attempt is already being abandoned.
+          if (idleTimer) clearTimeout(idleTimer);
           await handleFailure(err);
           continue;
+        } finally {
+          // Insurance for the non-throwing exits (terminal break, clean
+          // EOF): the pending timer must not keep the event loop alive.
+          if (idleTimer) clearTimeout(idleTimer);
         }
 
         if (terminal) break;
