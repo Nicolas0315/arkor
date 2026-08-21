@@ -23,6 +23,7 @@ import {
   NO_VALUE_PLACEHOLDER,
   truncateMiddle,
 } from "../lib/format";
+import { appendLossPoint } from "../lib/loss-points";
 
 const MAX_LOSS_POINTS = 2000;
 
@@ -220,19 +221,16 @@ export function JobDetail({ jobId }: { jobId: string }) {
         // Cap retained points so long/high-step runs don't grow without
         // bound and slow LossChart re-renders. 2000 is well above the
         // chart's visual resolution at any reasonable width.
-        setPoints((prev) => {
-          const next = [
-            ...prev,
-            {
-              step,
-              loss: safeLoss,
-              evalLoss: safeEvalLoss,
-            },
-          ];
-          return next.length > MAX_LOSS_POINTS
-            ? next.slice(next.length - MAX_LOSS_POINTS)
-            : next;
-        });
+        // Downsampling keeps first/last (final loss honest; initial convergence
+        // stays visible; bucket min/max for spikes. Advanced panel stats are
+        // over the retained series only: same points as the chart, not raw n.
+        setPoints((prev) =>
+          appendLossPoint(
+            prev,
+            { step, loss: safeLoss, evalLoss: safeEvalLoss },
+            MAX_LOSS_POINTS,
+          ),
+        );
       }
     });
     es.addEventListener("checkpoint.saved", (ev: MessageEvent<string>) => {
