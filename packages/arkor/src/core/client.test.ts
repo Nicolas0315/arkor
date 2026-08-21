@@ -580,6 +580,109 @@ describe("CloudApiClient.listProjects", () => {
     expect(calls[0]?.method).toBe("GET");
     expect(calls[0]?.url).toContain("/v1/projects?orgSlug=anon-abc");
   });
+
+  it("retries a 503 and returns the next successful response", async () => {
+    let response = 0;
+    const { fetch: f, calls } = recorder(() => {
+      response++;
+      return response === 1
+        ? Response.json({ error: "unavailable" }, { status: 503 })
+        : Response.json(
+            { org: { slug: "anon-abc", id: "o1", name: "Anon" }, projects: [] },
+            { status: 200 },
+          );
+    });
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async () => undefined,
+    });
+    await expect(client.listProjects("anon-abc")).resolves.toMatchObject({
+      projects: [],
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry a 400 response", async () => {
+    const { fetch: f, calls } = recorder(() =>
+      Response.json({ error: "bad request" }, { status: 400 }),
+    );
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async () => undefined,
+    });
+    await expect(client.listProjects("anon-abc")).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("throws the last retryable error after three failed attempts", async () => {
+    const { fetch: f, calls } = recorder(() =>
+      Response.json({ error: "unavailable" }, { status: 503 }),
+    );
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async () => undefined,
+    });
+    await expect(client.listProjects("anon-abc")).rejects.toMatchObject({
+      name: "CloudApiError",
+      status: 503,
+      message: "unavailable",
+    });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("retries a fetch-level TypeError", async () => {
+    let response = 0;
+    const { fetch: f, calls } = recorder(() => {
+      response++;
+      return response === 1
+        ? Promise.reject(new TypeError("network error"))
+        : Response.json(
+            { org: { slug: "anon-abc", id: "o1", name: "Anon" }, projects: [] },
+            { status: 200 },
+          );
+    });
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async () => undefined,
+    });
+    await expect(client.listProjects("anon-abc")).resolves.toBeDefined();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("uses exponentially-growing, bounded full-jitter delays", async () => {
+    const delays: number[] = [];
+    const { fetch: f } = recorder(() =>
+      Response.json({ error: "unavailable" }, { status: 503 }),
+    );
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    await expect(client.listProjects("anon-abc")).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(delays).toHaveLength(2);
+    const firstDelay = delays[0] ?? -1;
+    const secondDelay = delays[1] ?? -1;
+    expect(firstDelay).toBeGreaterThanOrEqual(0);
+    expect(firstDelay).toBeLessThanOrEqual(300);
+    expect(secondDelay).toBeGreaterThanOrEqual(0);
+    expect(secondDelay).toBeLessThanOrEqual(600);
+  });
 });
 
 describe("CloudApiClient.createProject", () => {
@@ -725,6 +828,30 @@ describe("CloudApiClient.createJob", () => {
     };
     expect(body.name).toBe("run");
     expect(body.config.model).toBe("m");
+  });
+
+  it("does not retry a 503 because creation is not idempotent", async () => {
+    const { fetch: f, calls } = recorder(() =>
+      Response.json({ error: "unavailable" }, { status: 503 }),
+    );
+    const client = new CloudApiClient({
+      baseUrl: "http://mock",
+      credentials: anonCreds,
+      fetch: f,
+      sleep: async () => undefined,
+    });
+    await expect(
+      client.createJob({
+        orgSlug: "o",
+        projectSlug: "p",
+        name: "run",
+        config: {
+          model: "m",
+          datasetSource: { type: "huggingface", name: "x" },
+        },
+      }),
+    ).rejects.toMatchObject({ status: 503, message: "unavailable" });
+    expect(calls).toHaveLength(1);
   });
 });
 

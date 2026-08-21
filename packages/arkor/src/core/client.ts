@@ -106,6 +106,7 @@ export interface CloudApiClientOptions {
   baseUrl: string;
   credentials: Credentials;
   fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
   /**
    * Override the per-response deprecation callback. Defaults to the
    * SDK-global `recordDeprecation`, which the CLI flushes once at the
@@ -121,6 +122,7 @@ export class CloudApiClient {
   private readonly rpc: ArkorClient;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly token: string;
   // Resolved once so the raw `chat` / `openEventStream` paths (which tap
   // deprecation headers manually) honour the same per-request override the
@@ -131,6 +133,9 @@ export class CloudApiClient {
     this.token = tokenFromCredentials(options.credentials);
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.fetchImpl = options.fetch ?? fetch;
+    this.sleep =
+      options.sleep ??
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.onDeprecation = options.onDeprecation ?? recordDeprecation;
     this.rpc = createArkorRpc({
       baseUrl: this.baseUrl,
@@ -161,9 +166,33 @@ export class CloudApiClient {
     return `Bearer ${this.token}`;
   }
 
+  private async withReadRetry<T>(op: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await op();
+      } catch (error) {
+        const retryable =
+          error instanceof TypeError ||
+          (error instanceof CloudApiError &&
+            (error.status === 408 ||
+              error.status === 429 ||
+              error.status >= 500));
+        if (!retryable || attempt === 2) {
+          throw error;
+        }
+        // Mutating endpoints lack upstream idempotency keys, so only reads
+        // reach this helper and can safely issue a fresh request.
+        const maxDelay = Math.min(300 * 2 ** attempt, 2000);
+        await this.sleep(Math.random() * maxDelay);
+      }
+    }
+  }
+
   async listProjects(orgSlug: string) {
-    const res = await this.rpc.v1.projects.$get({ query: { orgSlug } });
-    return decode(res, listProjectsResponseSchema);
+    return this.withReadRetry(async () => {
+      const res = await this.rpc.v1.projects.$get({ query: { orgSlug } });
+      return decode(res, listProjectsResponseSchema);
+    });
   }
 
   async createProject(input: { orgSlug: string; name: string; slug: string }) {
@@ -201,12 +230,14 @@ export class CloudApiClient {
     jobId: string,
     scope: { orgSlug: string; projectSlug: string },
   ): Promise<{ job: TrainingJob; events?: unknown[] }> {
-    const res = await this.rpc.v1.jobs[":id"].$get({
-      param: { id: jobId },
-      query: scope,
+    return this.withReadRetry(async () => {
+      const res = await this.rpc.v1.jobs[":id"].$get({
+        param: { id: jobId },
+        query: scope,
+      });
+      const data = await decode(res, jobDetailResponseSchema);
+      return data as unknown as { job: TrainingJob; events?: unknown[] };
     });
-    const data = await decode(res, jobDetailResponseSchema);
-    return data as unknown as { job: TrainingJob; events?: unknown[] };
   }
 
   async cancelJob(
@@ -266,21 +297,25 @@ export class CloudApiClient {
   async listDeployments(
     scope: DeploymentScope,
   ): Promise<{ deployments: DeploymentDto[] }> {
-    const res = await this.rpc.v1.endpoints.$get({ query: scope });
-    const data = await decode(res, listDeploymentsResponseSchema);
-    return data as unknown as { deployments: DeploymentDto[] };
+    return this.withReadRetry(async () => {
+      const res = await this.rpc.v1.endpoints.$get({ query: scope });
+      const data = await decode(res, listDeploymentsResponseSchema);
+      return data as unknown as { deployments: DeploymentDto[] };
+    });
   }
 
   async getDeployment(
     id: string,
     scope: DeploymentScope,
   ): Promise<{ deployment: DeploymentDto }> {
-    const res = await this.rpc.v1.endpoints[":id"].$get({
-      param: { id },
-      query: scope,
+    return this.withReadRetry(async () => {
+      const res = await this.rpc.v1.endpoints[":id"].$get({
+        param: { id },
+        query: scope,
+      });
+      const data = await decode(res, getDeploymentResponseSchema);
+      return data as unknown as { deployment: DeploymentDto };
     });
-    const data = await decode(res, getDeploymentResponseSchema);
-    return data as unknown as { deployment: DeploymentDto };
   }
 
   async createDeployment(
@@ -321,12 +356,14 @@ export class CloudApiClient {
     id: string,
     scope: DeploymentScope,
   ): Promise<{ keys: DeploymentKeyDto[] }> {
-    const res = await this.rpc.v1.endpoints[":id"].keys.$get({
-      param: { id },
-      query: scope,
+    return this.withReadRetry(async () => {
+      const res = await this.rpc.v1.endpoints[":id"].keys.$get({
+        param: { id },
+        query: scope,
+      });
+      const data = await decode(res, listDeploymentKeysResponseSchema);
+      return data as unknown as { keys: DeploymentKeyDto[] };
     });
-    const data = await decode(res, listDeploymentKeysResponseSchema);
-    return data as unknown as { keys: DeploymentKeyDto[] };
   }
 
   async createDeploymentKey(
