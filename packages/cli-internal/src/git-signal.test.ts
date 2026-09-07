@@ -43,7 +43,8 @@ describe("gitInitialCommit signal handling", () => {
     //   1. `git init -q`            → exits 0
     //   2. `git add -A`             → exits 0
     //   3. `git commit -q -m …`     → killed (close with code=null) +
-    //      stderr containing a signing-failure marker so the helper
+    //      stderr containing the Windows 1Password signing-agent failure so
+    //      the helper
     //      treats it as a signing failure and retries unsigned.
     //   4. `git -c commit.gpgsign=false commit -q -m …` → exits 0
     //
@@ -71,7 +72,9 @@ describe("gitInitialCommit signal handling", () => {
     // then close with `code=null` exercises the `?? -1` branch.
     order[2]!.stderr.emit(
       "data",
-      Buffer.from("error: gpg failed to sign the data\n"),
+      Buffer.from(
+        "error: 1Password: agent returned an error\nfatal: failed to write commit object\n",
+      ),
     );
     order[2]!.emit("close", null);
     await Promise.resolve();

@@ -38,6 +38,12 @@ export interface InitialCommitResult {
   signingFallback: boolean;
 }
 
+// A broken signing agent can block `git commit` without ever returning an
+// error (observed with op-ssh-sign.exe on Windows). Keep the escape hatch
+// bounded so scaffold commands do not hang indefinitely, while leaving
+// ordinary Git commands untouched.
+const INITIAL_COMMIT_TIMEOUT_MS = 5_000;
+
 /**
  * `git init && git add -A && git commit -m <message>` in `cwd`.
  *
@@ -52,10 +58,14 @@ export async function gitInitialCommit(
   await runGit(cwd, ["init", "-q"]);
   await runGit(cwd, ["add", "-A"]);
 
-  const first = await tryGit(cwd, ["commit", "-q", "-m", message]);
+  const first = await tryGit(
+    cwd,
+    ["commit", "-q", "-m", message],
+    INITIAL_COMMIT_TIMEOUT_MS,
+  );
   if (first.code === 0) return { signingFallback: false };
 
-  if (looksLikeSigningFailure(first.stderr)) {
+  if (looksLikeSigningFailure(first.stderr) || first.timedOut) {
     await runGit(cwd, [
       "-c",
       "commit.gpgsign=false",
@@ -76,8 +86,11 @@ export async function gitInitialCommit(
 
 function looksLikeSigningFailure(stderr: string): boolean {
   // Covers GPG (`gpg failed to sign`, `gpg: signing failed`) and SSH
-  // (`error: signing failed: <reason>`) variants.
-  return /failed to sign|signing failed|gpg failed/i.test(stderr);
+  // (`error: signing failed: <reason>`) variants. 1Password's SSH signer
+  // reports an agent error followed by Git's generic commit-object failure.
+  return /failed to sign|signing failed|gpg failed|1password:\s*agent returned an error/i.test(
+    stderr,
+  );
 }
 
 function runGit(cwd: string, args: string[]): Promise<void> {
@@ -100,19 +113,45 @@ function runGit(cwd: string, args: string[]): Promise<void> {
 function tryGit(
   cwd: string,
   args: string[],
-): Promise<{ code: number; stderr: string }> {
+  timeoutMs?: number,
+): Promise<{ code: number; stderr: string; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, {
       cwd,
       stdio: ["ignore", "ignore", "pipe"],
     });
     const chunks: Buffer[] = [];
+    let timedOut = false;
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            // On Windows, `git commit` can leave its signing helper alive
+            // after the parent is killed. Terminate the whole tree first so
+            // the helper cannot retain `.git/index.lock` during the retry.
+            if (process.platform === "win32" && child.pid !== undefined) {
+              const killer = spawn(
+                "taskkill.exe",
+                ["/PID", String(child.pid), "/T", "/F"],
+                { stdio: "ignore" },
+              );
+              killer.on("error", () => child.kill());
+              killer.on("close", (code) => {
+                if (code !== 0 && !child.killed) child.kill();
+              });
+            } else {
+              child.kill();
+            }
+          }, timeoutMs);
     child.stderr.on("data", (c: Buffer) => chunks.push(c));
     child.on("error", reject);
     child.on("close", (code) => {
+      if (timer !== undefined) clearTimeout(timer);
       resolve({
         code: code ?? -1,
         stderr: Buffer.concat(chunks).toString("utf8"),
+        timedOut,
       });
     });
   });

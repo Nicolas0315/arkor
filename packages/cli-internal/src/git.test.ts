@@ -131,10 +131,12 @@ describe("gitInitialCommit", () => {
     process.env.GIT_CONFIG_COUNT = "3";
     process.env.GIT_CONFIG_KEY_0 = "commit.gpgsign";
     process.env.GIT_CONFIG_VALUE_0 = "true";
-    process.env.GIT_CONFIG_KEY_1 = "gpg.program";
-    process.env.GIT_CONFIG_VALUE_1 = "/nonexistent/gpg-binary";
-    process.env.GIT_CONFIG_KEY_2 = "commit.gpgsign";
-    process.env.GIT_CONFIG_VALUE_2 = "true";
+    // Override a developer's global SSH signing format so the deliberately
+    // missing OpenPGP program fails immediately on every platform.
+    process.env.GIT_CONFIG_KEY_1 = "gpg.format";
+    process.env.GIT_CONFIG_VALUE_1 = "openpgp";
+    process.env.GIT_CONFIG_KEY_2 = "gpg.program";
+    process.env.GIT_CONFIG_VALUE_2 = "/nonexistent/gpg-binary";
 
     const result = await gitInitialCommit(cwd, "Initial commit from test");
     expect(result.signingFallback).toBe(true);
