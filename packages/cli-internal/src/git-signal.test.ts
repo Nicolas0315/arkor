@@ -77,7 +77,7 @@ describe("gitInitialCommit signal handling", () => {
       ),
     );
     order[2]!.emit("close", null);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(order).toHaveLength(4));
 
     // Final retry succeeds.
     order[3]!.emit("close", 0);

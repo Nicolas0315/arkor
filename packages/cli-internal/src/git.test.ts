@@ -125,18 +125,19 @@ describe("gitInitialCommit", () => {
 
   it("falls back to commit.gpgsign=false when signing is forced and broken", async () => {
     writeFileSync(join(cwd, "f.txt"), "x");
-    // Force gpg signing with a non-existent program so the signing step
-    // fails with a recognisable "gpg failed to sign" stderr, exactly the
-    // shape the helper retries past.
+    // Force gpg signing through Node itself. Git passes gpg arguments to the
+    // executable, so Node exits quickly with an unsupported-option error and
+    // Git emits the recognisable "gpg failed to sign" marker without relying
+    // on a developer-specific gpg installation or a timeout.
     process.env.GIT_CONFIG_COUNT = "3";
     process.env.GIT_CONFIG_KEY_0 = "commit.gpgsign";
     process.env.GIT_CONFIG_VALUE_0 = "true";
-    // Override a developer's global SSH signing format so the deliberately
-    // missing OpenPGP program fails immediately on every platform.
+    // Override a developer's global SSH signing format so the OpenPGP path is
+    // deterministic on every platform.
     process.env.GIT_CONFIG_KEY_1 = "gpg.format";
     process.env.GIT_CONFIG_VALUE_1 = "openpgp";
     process.env.GIT_CONFIG_KEY_2 = "gpg.program";
-    process.env.GIT_CONFIG_VALUE_2 = "/nonexistent/gpg-binary";
+    process.env.GIT_CONFIG_VALUE_2 = process.execPath;
 
     const result = await gitInitialCommit(cwd, "Initial commit from test");
     expect(result.signingFallback).toBe(true);
