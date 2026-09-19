@@ -31,7 +31,8 @@ updates:
     open-pull-requests-limit: 100
     groups:
       # `@vitest/coverage-v8` pins its runner peer to the EXACT vitest
-      # version (4.1.5 declares `"vitest": "4.1.5"`, not a range), so a
+      # version: the tree's 4.1.5 declares `vitest: 4.1.5`, not a
+      # range (pnpm-lock.yaml), and 5.0.1 does the same at 5.0.1. So a
       # split bump is unsatisfiable by construction. #282: "Vitest
       # rejects a mixed-major core/provider pair during coverage init".
       # `@vitest/eslint-plugin` is deliberately NOT here: it versions
@@ -47,9 +48,10 @@ updates:
           - "@vitest/coverage-v8"
 
       # `@vitejs/plugin-react` declares the Vite majors it supports and
-      # moves that window with its own majors: 4.7.0 peers on
-      # `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0`, 6.1.1 peers on `^8.0.0`.
-      # Neither side can cross a major alone.
+      # moves that window with its own majors: the tree's 4.7.0 peers
+      # on `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0` (pnpm-lock.yaml) and
+      # the pending 6.1.1 peers on `^8.0.0`, which is why #273 is red
+      # on its own. Neither side can cross a major alone.
       vite:
         patterns:
           - vite
@@ -60,9 +62,13 @@ updates:
           - vite
           - "@vitejs/plugin-react"
 
-      # `react-dom@19.3.0` peers on `react: "^19.3.0"` and
-      # `@types/react-dom@19.3.0` peers on `@types/react: "^19.3.0"`,
-      # so each half constrains the other at its own version floor.
+      # The hard coupling is the RUNTIME pair: `react-dom` peers on
+      # `react` at its own version floor, so the two cannot separate.
+      # In the tree today, `react-dom@19.2.5` peers on `react: ^19.2.5`
+      # (pnpm-lock.yaml), and the pending 19.3.0 bump moves that floor
+      # with it. The types ride along rather than pinning each other:
+      # `@types/react-dom@19.2.3` peers on `@types/react: ^19.2.0`, a
+      # minor-floor range, not a pin. They are in the group because
       # Dependabot already pairs each runtime package with its types
       # (#287, #288); what it splits is the dom/non-dom axis, which is
       # the axis that aborts the Studio bootstrap with "Incompatible
@@ -81,8 +87,10 @@ updates:
           - "@types/react"
           - "@types/react-dom"
 
-      # `@tailwindcss/vite@4.3.3` declares `tailwindcss: "4.3.3"` as a
-      # direct DEPENDENCY, not a peer, so bumping the CSS package alone
+      # `@tailwindcss/vite` declares `tailwindcss` at its OWN exact
+      # version as a direct DEPENDENCY, not a peer: the tree resolves
+      # `@tailwindcss/vite@4.2.4` with `tailwindcss: 4.2.4` under it
+      # (pnpm-lock.yaml). Bumping the CSS package alone therefore
       # leaves the plugin pulling its own pinned compiler and the build
       # silently keeps the old one. That is the #282 symptom stated
       # exactly: "Studio only reaches Tailwind through the Vite plugin".
