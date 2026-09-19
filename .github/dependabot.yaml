@@ -31,9 +31,9 @@ updates:
     open-pull-requests-limit: 100
     groups:
       # `@vitest/coverage-v8` pins its runner peer to the EXACT vitest
-      # version: the tree's 4.1.5 declares `vitest: 4.1.5`, not a
-      # range (pnpm-lock.yaml), and 5.0.1 does the same at 5.0.1. So a
-      # split bump is unsatisfiable by construction. #282: "Vitest
+      # version: the tree's 4.1.5 declares `vitest: 4.1.5`, not a range
+      # (pnpm-lock.yaml), and the pending 5.0.1 does the same at 5.0.1.
+      # So a split bump is unsatisfiable by construction. #282: "Vitest
       # rejects a mixed-major core/provider pair during coverage init".
       # `@vitest/eslint-plugin` is deliberately NOT here: it versions
       # independently and peers on `vitest: "*"`.
