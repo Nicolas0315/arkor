@@ -1,4 +1,26 @@
 version: 2
+# `groups` exist here for one reason: a family whose members must move
+# in lockstep is red as separate PRs no matter which half lands first,
+# so splitting it produces failing PRs rather than reviewable ones.
+# ENG-1157 (#282) consolidated 47 of those by hand and recorded the
+# pairs in its description; these groups are that table expressed as
+# configuration, so the next batch does not repeat it.
+#
+# Grouping is not for convenience. Add a family only with the evidence
+# for its coupling (a peer pin, a hard dependency, a shared action
+# repository) written next to it, and leave families whose manifests
+# declare only wide ranges ungrouped so a failure still names one
+# bump.
+#
+# Each family needs TWO entries, because `applies-to` is a per-group
+# key that defaults to `version-updates`: written once, a group leaves
+# security updates ungrouped, and a CVE against one member would open
+# its own PR and recreate the mismatch. Note the residual limit this
+# does NOT fix: a grouped security PR carries only the members that
+# actually have a fix available, so an advisory against one half alone
+# still produces a one-sided bump. The security group removes the "two
+# separate security PRs" case, not the "only one side is vulnerable"
+# case.
 updates:
   - package-ecosystem: npm
     directory: /
@@ -7,6 +29,72 @@ updates:
     cooldown:
       default-days: 1
     open-pull-requests-limit: 100
+    groups:
+      # `@vitest/coverage-v8` pins its runner peer to the EXACT vitest
+      # version (4.1.5 declares `"vitest": "4.1.5"`, not a range), so a
+      # split bump is unsatisfiable by construction. #282: "Vitest
+      # rejects a mixed-major core/provider pair during coverage init".
+      # `@vitest/eslint-plugin` is deliberately NOT here: it versions
+      # independently and peers on `vitest: "*"`.
+      vitest:
+        patterns:
+          - vitest
+          - "@vitest/coverage-v8"
+      vitest-security:
+        applies-to: security-updates
+        patterns:
+          - vitest
+          - "@vitest/coverage-v8"
+
+      # `@vitejs/plugin-react` declares the Vite majors it supports and
+      # moves that window with its own majors: 4.7.0 peers on
+      # `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0`, 6.1.1 peers on `^8.0.0`.
+      # Neither side can cross a major alone.
+      vite:
+        patterns:
+          - vite
+          - "@vitejs/plugin-react"
+      vite-security:
+        applies-to: security-updates
+        patterns:
+          - vite
+          - "@vitejs/plugin-react"
+
+      # `react-dom@19.3.0` peers on `react: "^19.3.0"` and
+      # `@types/react-dom@19.3.0` peers on `@types/react: "^19.3.0"`,
+      # so each half constrains the other at its own version floor.
+      # Dependabot already pairs each runtime package with its types
+      # (#287, #288); what it splits is the dom/non-dom axis, which is
+      # the axis that aborts the Studio bootstrap with "Incompatible
+      # React versions".
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+      react-security:
+        applies-to: security-updates
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+
+      # `@tailwindcss/vite@4.3.3` declares `tailwindcss: "4.3.3"` as a
+      # direct DEPENDENCY, not a peer, so bumping the CSS package alone
+      # leaves the plugin pulling its own pinned compiler and the build
+      # silently keeps the old one. That is the #282 symptom stated
+      # exactly: "Studio only reaches Tailwind through the Vite plugin".
+      tailwind:
+        patterns:
+          - tailwindcss
+          - "@tailwindcss/vite"
+      tailwind-security:
+        applies-to: security-updates
+        patterns:
+          - tailwindcss
+          - "@tailwindcss/vite"
     ignore:
       - dependency-name: "@types/node"
         update-types:
@@ -19,3 +107,19 @@ updates:
     cooldown:
       default-days: 1
     open-pull-requests-limit: 100
+    groups:
+      # `github/codeql-action/init` and `github/codeql-action/analyze`
+      # are two entry points of ONE action repository, and the runner
+      # refuses a mismatched pair: split across PRs, both Analyze jobs
+      # fail with "Loaded a configuration file for version '<new>', but
+      # running version '<old>'" (#282, fifth row of its pair table,
+      # from #238 and #241). `actions/upload-artifact` and
+      # `actions/download-artifact` look similar but are separate
+      # repositories with independent versions, so they stay ungrouped.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
+      codeql-action-security:
+        applies-to: security-updates
+        patterns:
+          - "github/codeql-action*"
