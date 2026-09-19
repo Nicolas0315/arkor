@@ -23,11 +23,11 @@ version: 2
 # a pair before the other therefore still produces a one-sided bump.
 # What a group removes is the case where both halves ARE available and
 # would otherwise arrive as two separately-red PRs, which is every row
-# of the #282 table. The remaining window is narrow for these families
-# (each is published from a single repository at a single version, and
-# the shared cooldown delays both halves equally) but it is real, and
-# closing it needs an invariant CI can enforce, not a Dependabot
-# setting.
+# of the #282 table. How WIDE the remaining window is differs per
+# family and is not something the grouping itself improves, so each
+# group below states its release-coordination evidence next to its
+# coupling evidence. Closing the window needs an invariant CI can
+# enforce, not a Dependabot setting.
 updates:
   - package-ecosystem: npm
     directory: /
@@ -44,6 +44,9 @@ updates:
       # rejects a mixed-major core/provider pair during coverage init".
       # `@vitest/eslint-plugin` is deliberately NOT here: it versions
       # independently and peers on `vitest: "*"`.
+      # Release coordination: both ship from vitest-dev/vitest at the
+      # same version (4.1.5 today), so the two halves normally become
+      # available together.
       vitest:
         patterns:
           - vitest
@@ -59,6 +62,11 @@ updates:
       # on `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0` (pnpm-lock.yaml) and
       # the pending 6.1.1 peers on `^8.0.0`, which is why #273 is red
       # on its own. Neither side can cross a major alone.
+      # Release coordination: NONE. `vite` is vitejs/vite and
+      # `@vitejs/plugin-react` is vitejs/vite-plugin-react, a separate
+      # repository on an unrelated version line (6.4.2 against 4.7.0).
+      # This is the family most likely to see a genuinely one-sided
+      # release, and the one where the group buys the least.
       vite:
         patterns:
           - vite
@@ -80,6 +88,11 @@ updates:
       # (#287, #288); what it splits is the dom/non-dom axis, which is
       # the axis that aborts the Studio bootstrap with "Incompatible
       # React versions".
+      # Release coordination: the runtime pair ships from facebook/react
+      # at the same version (19.2.5). The types do NOT: both come from
+      # DefinitelyTyped on their own lines (`@types/react@19.2.14`,
+      # `@types/react-dom@19.2.3`), so a types-only one-sided bump is
+      # normal here and the group does not prevent it.
       react:
         patterns:
           - react
@@ -101,6 +114,8 @@ updates:
       # leaves the plugin pulling its own pinned compiler and the build
       # silently keeps the old one. That is the #282 symptom stated
       # exactly: "Studio only reaches Tailwind through the Vite plugin".
+      # Release coordination: both ship from tailwindlabs/tailwindcss at
+      # the same version (4.2.4 today).
       tailwind:
         patterns:
           - tailwindcss
@@ -131,6 +146,9 @@ updates:
       # from #238 and #241). `actions/upload-artifact` and
       # `actions/download-artifact` look similar but are separate
       # repositories with independent versions, so they stay ungrouped.
+      # Release coordination: the two entry points are the same repo at
+      # the same SHA, so they always have an update at the same moment.
+      # This is the one family with no one-sided-release window.
       codeql-action:
         patterns:
           - "github/codeql-action*"
