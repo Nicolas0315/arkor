@@ -15,12 +15,19 @@ version: 2
 # Each family needs TWO entries, because `applies-to` is a per-group
 # key that defaults to `version-updates`: written once, a group leaves
 # security updates ungrouped, and a CVE against one member would open
-# its own PR and recreate the mismatch. Note the residual limit this
-# does NOT fix: a grouped security PR carries only the members that
-# actually have a fix available, so an advisory against one half alone
-# still produces a one-sided bump. The security group removes the "two
-# separate security PRs" case, not the "only one side is vulnerable"
-# case.
+# its own PR and recreate the mismatch.
+#
+# What grouping does NOT do, in EITHER lane: a group PR carries only
+# the members that actually have an update available, never the whole
+# pattern list. A release, or an advisory, that lands for one half of
+# a pair before the other therefore still produces a one-sided bump.
+# What a group removes is the case where both halves ARE available and
+# would otherwise arrive as two separately-red PRs, which is every row
+# of the #282 table. The remaining window is narrow for these families
+# (each is published from a single repository at a single version, and
+# the shared cooldown delays both halves equally) but it is real, and
+# closing it needs an invariant CI can enforce, not a Dependabot
+# setting.
 updates:
   - package-ecosystem: npm
     directory: /
