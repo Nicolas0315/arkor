@@ -61,7 +61,11 @@ updates:
       # moves that window with its own majors: the tree's 4.7.0 peers
       # on `^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0` (pnpm-lock.yaml) and
       # the pending 6.1.1 peers on `^8.0.0`, which is why #273 is red
-      # on its own. Neither side can cross a major alone.
+      # on its own. The other direction is worse because it is GREEN:
+      # a Vite major alone resolves the plugin outside its declared
+      # range (#309's lockfile pins `@vitejs/plugin-react@4.7.0` against
+      # `vite@8.3.1`), pnpm only warns on the unmet peer, and CI passes
+      # (#285, #309). #282 moves both majors together and passes.
       # Release coordination: NONE. `vite` is vitejs/vite and
       # `@vitejs/plugin-react` is vitejs/vite-plugin-react, a separate
       # repository on an unrelated version line (6.4.2 against 4.7.0).
